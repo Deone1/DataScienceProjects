@@ -1,0 +1,620 @@
+---
+title: "GermanCreditCardData"
+author: "Krishna Chaitanya Vamaraju"
+date: "March 19, 2018"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(
+  fig.path = "README_figs/README-"
+)
+```
+## EXECUTIVE SUMMARY
+The German credit data set is available at the UCI Machine Learning repository. It contains 1,000 samples that have been given labels of good and bad credit. In the data set, 70% were rated as having good credit.The baseline accuracy for the model is therefore 70% ,which is achieved by predicting all samples as good credit.A stratified
+random sample of 800 customers is drawn from the entire data set for training models. The remaining samples will be used as a test set to verify performance when a final model is determined.
+
+```{r message=FALSE,warning = FALSE}
+library(MASS) #Boston Housing Data Set
+library(dplyr) #Data Wrangling
+library(tidyverse) #Data Wrangling
+library(knitr) #Knitting RMDs and functionalities
+library(reshape2) #Data Wrangling
+library(ggplot2) #Data Visualization
+library(GGally) #Data Visualization
+library(boot) #Resampling methods
+library(rpart) #Tree modeling
+library(rattle)
+library(mgcv) #GAM modeling
+library(neuralnet) #Neural Networks Model
+library(plyr) #Data Wrangling
+library(caret) #Cross Validation for Neural Networks
+```
+
+The dataset loaded from `caret` package has all the factor varibales converted into dummy variables.First, remove near-zero variance predictors then get rid of a few predictors that duplicate values. For example, there are two possible values for the 
+housing variable: "Rent", "Own" and "ForFree". So that we don't have linear
+dependencies, we get rid of one of the levels (e.g. "ForFree")
+```{r}
+data(GermanCredit)
+GermanCredit$Class <- as.factor(recode(GermanCredit$Class,Bad = 1,Good =0))
+GermanCredit <- GermanCredit[, -nearZeroVar(GermanCredit)]
+GermanCredit$CheckingAccountStatus.lt.0 <- NULL
+GermanCredit$SavingsAccountBonds.lt.100 <- NULL
+GermanCredit$EmploymentDuration.lt.1 <- NULL
+GermanCredit$EmploymentDuration.Unemployed <- NULL
+GermanCredit$Personal.Male.Married.Widowed <- NULL
+GermanCredit$Property.Unknown <- NULL
+GermanCredit$Housing.ForFree <- NULL
+```
+
+The data is split into training (80%) and test sets (20%) using stratified sampling
+```{r}
+set.seed(100)
+inTrain <- createDataPartition(GermanCredit$Class, p = .8)[[1]]
+GermanCreditTrain <- GermanCredit[ inTrain, ]
+GermanCreditTest  <- GermanCredit[-inTrain, ]
+```
+
+## Logistic Regression
+```{r,warning=FALSE}
+
+
+fit.glm <- train(Class ~ .,
+                    data = GermanCreditTrain,
+                    method = "glm",
+                    trControl = trainControl(method = "cv", number = 10),
+                    family = "binomial")
+fit.glm
+
+```
+The Accuracy is 0.7085  for the logistic model. 
+
+```{r}
+library(pROC)
+creditResults <- data.frame(obs = GermanCreditTrain$Class)
+creditResults$prob <- predict(fit.glm, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.glm)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+creditROC.train.glm <- roc(creditResults$obs, creditResults$prob)
+
+```
+
+Predictions on the test set :
+```{r}
+
+creditResults <- data.frame(obs = GermanCreditTest$Class)
+creditResults$prob <- predict(fit.glm, GermanCreditTest, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.glm, GermanCreditTest)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+glm.train.pred <- predict(fit.glm, type = "prob")
+glm.test.pred <- predict(fit.glm, GermanCreditTest, type = "prob")
+```
+
+Plot of the probability of bad credit
+```{r}
+histogram(~prob|Label,
+          data = creditResults,
+          layout = c(2, 1),
+          nint = 20,
+          xlab = "Probability of Bad Credit",
+          type = "count")
+```
+The plot provides information on where we can expect the Probabilities to fall.
+
+Calculate and plot the calibration curve
+```{r}
+creditCalib <- calibration(obs ~ prob, data = creditResults)
+xyplot(creditCalib)
+```
+
+Confusion Matrix for the train data
+```{r}
+pcut <- 1/6
+prob.glm.in <- predict(fit.glm, type = "prob")[, "1"]
+pred.glm.in <- (prob.glm.in >= pcut) * 1
+prob.glm.out <- predict(fit.glm,GermanCreditTest, type = "prob")[, "1"]
+pred.glm.out <- (prob.glm.out >= pcut) * 1
+table(GermanCreditTrain$Class, pred.glm.in, dnn = c("Observation", "Prediction"))
+```
+Confusion Matrix for the Test Data :
+
+```{r}
+table(GermanCreditTest$Class, pred.glm.out, dnn = c("Observation", "Prediction"))
+
+```
+Misclassification for the train data 
+```{r}
+
+(glm.mis.train <- mean(ifelse(GermanCreditTrain$Class != pred.glm.in, 1, 0)))
+
+```
+
+Misclassification for the test data 
+```{r}
+
+(glm.mis.test <-mean(ifelse(GermanCreditTest$Class != pred.glm.out, 1, 0)))
+
+```
+
+Plotting ROC curves:
+
+
+The ROC curves for the Train and  Test Set :
+```{r}
+
+creditROC.train.glm <- roc(GermanCreditTrain$Class=="1",prob.glm.in)
+creditROC.test.glm <- roc(GermanCreditTest$Class=="1",prob.glm.out)
+plot(creditROC.train.glm)
+plot(creditROC.test.glm,,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+```
+
+
+
+Lift chart for the Logistic Regression Model :
+
+```{r}
+creditLift <- lift(obs ~ prob, data = creditResults)
+xyplot(creditLift)
+```
+
+## Fitting GAM to the Credit Card Data
+
+```{r}
+require(mgcv)
+gam.formula <- as.formula(paste("Class~ s(Amount)+s(InstallmentRatePercentage)+s(ResidenceDuration)+s(Age)+",paste0(names(GermanCreditTrain)[6:42],collapse  = "+")))
+
+
+fit.gam <- gam(Class ~ s(Duration,k=4)+s(Amount,k=4) + InstallmentRatePercentage + s(ResidenceDuration,k=4)+s(Age,k =4) + s(NumberExistingCredits,k=4) + NumberPeopleMaintenance + 
+    Telephone + CheckingAccountStatus.0.to.200 + CheckingAccountStatus.gt.200 +     CheckingAccountStatus.none + CreditHistory.PaidDuly + CreditHistory.Delay + 
+    CreditHistory.Critical + Purpose.NewCar + Purpose.UsedCar + 
+    Purpose.Furniture.Equipment + Purpose.Radio.Television + 
+    Purpose.Education + Purpose.Business + SavingsAccountBonds.100.to.500 + 
+    SavingsAccountBonds.500.to.1000 + SavingsAccountBonds.Unknown + 
+    EmploymentDuration.1.to.4 + EmploymentDuration.4.to.7 + EmploymentDuration.gt.7 + 
+    Personal.Male.Divorced.Seperated + Personal.Female.NotSingle + 
+    Personal.Male.Single + OtherDebtorsGuarantors.None +
+      OtherDebtorsGuarantors.Guarantor + 
+      Property.RealEstate + Property.Insurance + Property.CarOther +
+      OtherInstallmentPlans.Bank + OtherInstallmentPlans.None +
+      Housing.Rent + Housing.Own + Job.UnskilledResident + Job.SkilledEmployee +
+      Job.Management.SelfEmp.HighlyQualified ,family = binomial,data = GermanCreditTrain)
+
+# fit.gam <- train(gam.formula,
+#                      data = GermanCreditTrain,
+#                      method = "gam",
+#                      family = "binomial",
+#                      trControl = trainControl(method = "cv", 
+#                                               number = 10),weights = model_weights)
+fit.gam
+```
+
+
+Partial Residual Plot functions from the GAM fit.
+```{r}
+
+plot(fit.gam,scale=0,se=2,shade=TRUE,pages=1)
+
+```
+
+
+Confusion Matrix on the Train data
+```{r}
+pcut.gam <- 1/6
+prob.gam.in <- predict(fit.gam, type = "response")
+pred.gam.in <- (prob.gam.in >= pcut.gam) * 1
+prob.gam.out <- predict(fit.gam,GermanCreditTest, type = "response")
+pred.gam.out <- (prob.gam.out >= pcut) * 1
+table(GermanCreditTrain$Class, pred.gam.in, dnn = c("Observation", "Prediction"))
+
+```
+
+
+Misclassification rate on the Train Data is :-
+```{r}
+(gam.mis.train <- mean(ifelse(GermanCreditTrain$Class != pred.gam.in, 1, 0)))
+
+```
+Confusion Matrix for the Test Data :
+
+```{r}
+table(GermanCreditTest$Class, pred.gam.out, dnn = c("Observation", "Prediction"))
+
+```
+
+Misclassification for the test data 
+```{r}
+
+(gam.mis.test <- mean(ifelse(GermanCreditTest$Class != pred.gam.out, 1, 0)))
+
+```
+
+Plot of probability of bad credit
+```{r}
+histogram(~prob|Label,
+          data = creditResults,
+          layout = c(2, 1),
+          nint = 20,
+          xlab = "Probability of Bad Credit",
+          type = "count")
+```
+
+Calculate and plot the calibration curve
+```{r}
+creditCalib <- calibration(obs ~ prob, data = creditResults)
+xyplot(creditCalib)
+```
+
+ROC curves:
+
+
+```{r}
+
+creditROC.train.gam <- roc(GermanCreditTrain$Class=="1",prob.gam.in)
+creditROC.test.gam <- roc(GermanCreditTest$Class=="1",prob.gam.out)
+plot(creditROC.train.gam)
+plot(creditROC.test.gam,,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+```
+
+Lift charts
+```{r}
+creditLift <- lift(obs ~ prob, data = creditResults)
+xyplot(creditLift)
+```
+
+## Neural Network on the German Credit card Data
+```{r}
+
+
+nnetGrid <- expand.grid(decay = c(0, 0.01, .1), 
+                        size = c(1, 3, 5, 7, 9, 11, 13), 
+                        bag = FALSE)
+
+set.seed(100)
+fit.nn <- train(Class ~ .,
+                  data = GermanCreditTrain,
+                  method = "avNNet",
+                  trControl = trainControl(method = "cv", number = 2),
+                  preProc = c("center", "scale"),
+                  linout = TRUE,
+                  trace = FALSE,
+                  maxit = 1000,
+                  allowParallel = FALSE
+                    )
+fit.nn
+
+
+
+```
+
+```{r}
+### Predict the train set
+creditResults <- data.frame(obs = GermanCreditTrain$Class)
+creditResults$prob <- predict(fit.nn, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.nn)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+creditROC.train.nn <- roc(creditResults$obs, creditResults$prob)
+
+```
+
+
+
+```{r}
+### Predict the test set
+creditResults <- data.frame(obs = GermanCreditTest$Class)
+creditResults$prob <- predict(fit.nn, GermanCreditTest, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.nn, GermanCreditTest)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+
+```
+
+
+
+ Probability of bad credit
+```{r}
+
+histogram(~prob|Label,
+          data = creditResults,
+          layout = c(2, 1),
+          nint = 20,
+          xlab = "Probability of Bad Credit",
+          type = "count")
+```
+
+Calculate and plot the calibration curve
+```{r}
+creditCalib <- calibration(obs ~ prob, data = creditResults)
+xyplot(creditCalib)
+```
+
+Confusion Matrix for the train data
+```{r}
+pcut <- 1/6
+prob.nn.in <- predict(fit.nn, type = "prob")[, "1"]
+pred.nn.in <- (prob.nn.in >= pcut) * 1
+prob.nn.out <- predict(fit.nn,GermanCreditTest, type = "prob")[, "1"]
+pred.nn.out <- (prob.nn.out >= pcut) * 1
+table(GermanCreditTrain$Class, pred.nn.in, dnn = c("Observation", "Prediction"))
+```
+Confusion Matrix for the Test Data :
+
+```{r}
+table(GermanCreditTest$Class, pred.nn.out, dnn = c("Observation", "Prediction"))
+
+```
+
+
+Misclassification for the train data 
+```{r}
+
+(nn.mis.train <-mean(ifelse(GermanCreditTrain$Class != pred.nn.in, 1, 0)))
+
+```
+
+Misclassification for the test data 
+```{r}
+
+(nn.mis.test <- mean(ifelse(GermanCreditTest$Class != pred.nn.out, 1, 0)))
+
+```
+
+ROC curves:
+
+```{r}
+creditROC.train.nn<- roc(GermanCreditTrain$Class=="1",prob.nn.in)
+creditROC.test.nn <- roc(GermanCreditTest$Class=="1",prob.nn.out)
+plot(creditROC.train.nn)
+plot(creditROC.test.nn,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+
+
+```
+
+
+
+
+ROC Curve for the Neural network model :
+```{r}
+plot(creditROC.test.nn, legacy.axes = TRUE,lty = "solid")
+plot(creditROC.train.nn,legacy.axes = TRUE,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+```
+As expected the difference between train and test ROC's is higher for Neural networks.Neural network can only be used if they are properly tuned so that they don't overfit the training data.
+
+Lift charts for the neural network model :
+```{r}
+creditLift <- lift(obs ~ prob, data = creditResults)
+xyplot(creditLift)
+
+```
+
+## Classification Tree on the German Credit card Data
+
+The method used to fit the data is `rpart` and the model is built using Cross-Validation to find the optimum Cp.The results of the Regression Tree are as follows :
+```{r}
+fit.tree <- train(Class ~ .,
+                        data = GermanCreditTrain,
+                        method = "rpart",
+                        tuneLength = 30,
+                        trControl =trainControl(method = "cv", number = 10) 
+                        )
+ 
+library(party)
+library(rattle)
+fancyRpartPlot(fit.tree$finalModel)
+
+```
+
+
+Summary of the Tree fit
+```{r}
+fit.tree
+```
+
+```{r}
+### Predict the train set
+creditResults <- data.frame(obs = GermanCreditTrain$Class)
+creditResults$prob <- predict(fit.tree, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.tree)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+creditROC.train.tree<- roc(creditResults$obs, creditResults$prob)
+```
+
+
+```{r}
+### Predict the test set
+creditResults <- data.frame(obs = GermanCreditTest$Class)
+creditResults$prob <- predict(fit.tree, GermanCreditTest, type = "prob")[, "1"]
+creditResults$pred <- predict(fit.tree, GermanCreditTest)
+creditResults$Label <- ifelse(creditResults$obs == 1, 
+                              "True Outcome: Bad Credit", 
+                              "True Outcome: Good Credit")
+
+```
+
+Probability plot of bad credit on the Test Set :
+```{r}
+histogram(~prob|Label,
+          data = creditResults,
+          layout = c(2, 1),
+          nint = 20,
+          xlab = "Probability of Bad Credit",
+          type = "count")
+```
+
+ plot of the calibration curve
+```{r}
+creditCalib <- calibration(obs ~ prob, data = creditResults)
+xyplot(creditCalib)
+```
+
+
+
+ ROC curves:
+```{r}
+
+
+creditROC.test.tree <- roc(creditResults$obs, creditResults$prob)
+(auc.tree <- auc(creditROC.test.tree))
+
+```
+
+```{r}
+plot(creditROC.test.tree, legacy.axes = TRUE,lty = "solid")
+plot(creditROC.train.tree,legacy.axes = TRUE,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+```
+
+Lift charts
+```{r}
+creditLift <- lift(obs ~ prob, data = creditResults)
+xyplot(creditLift)
+
+```
+Confusion Matrix for the train data
+```{r}
+pcut <- 1/6
+prob.tree.in <- predict(fit.tree, type = "prob")[, "1"]
+pred.tree.in <- (prob.tree.in >= pcut) * 1
+prob.tree.out <- predict(fit.tree,GermanCreditTest, type = "prob")[, "1"]
+pred.tree.out <- (prob.tree.out >= pcut) * 1
+table(GermanCreditTrain$Class, pred.tree.in, dnn = c("Observation", "Prediction"))
+```
+Confusion Matrix for the Test Data :
+
+```{r}
+table(GermanCreditTest$Class, pred.tree.out, dnn = c("Observation", "Prediction"))
+
+```
+
+
+Misclassification for the train data 
+```{r}
+
+(tree.mis.train <-mean(ifelse(GermanCreditTrain$Class != pred.tree.in, 1, 0)))
+
+```
+
+Misclassification for the test data 
+```{r}
+
+(tree.mis.test <- mean(ifelse(GermanCreditTest$Class != pred.tree.out, 1, 0)))
+
+```
+
+## Linear Discriminant Analysis
+
+Summary of the LDA fit :
+```{r}
+fit.lda <- lda(Class ~ ., data = GermanCreditTrain)
+fit.lda
+```
+
+
+Confusion Matrix for the Train Data :
+```{r}
+prob.lda.in <- predict(fit.lda, data = GermanCreditTrain)
+pcut.lda <- 1/6
+pred.lda.in <- (prob.lda.in$posterior[, 2] >= pcut.lda) * 1
+table(GermanCreditTrain$Class, pred.lda.in, dnn = c("Obs", "Pred"))
+```
+
+Confusion Matrix for the Testing Data
+```{r}
+prob.lda.out<- predict(fit.lda, GermanCreditTest)
+pred.lda.out <- (prob.lda.out$posterior[, 2] >= pcut.lda) * 1
+table(GermanCreditTest$Class, pred.lda.out, dnn = c("Obs", "Pred"))
+
+```
+
+Misclassification Rate for In-Sample
+```{r}
+(mis.lda.in <- mean(ifelse(GermanCreditTrain$Class != pred.lda.in, 1, 0)))
+
+```
+
+Misclassification Rate for Out-of-Sample
+```{r}
+(mis.lda.out <- mean(ifelse(GermanCreditTest$Class != pred.lda.out, 1, 0)))
+```
+ROC Curve for Linear Discriminant Analysis:
+```{r}
+creditROC.train.lda<- roc(GermanCreditTrain$Class=="1",prob.lda.in$posterior[, 2])
+creditROC.test.lda <- roc(GermanCreditTest$Class=="1",prob.lda.out$posterior[, 2])
+plot(creditROC.train.lda)
+plot(creditROC.test.lda,add=TRUE,lty = "dashed",col = "red")
+legend("topright",legend=c("Train ROC","Test ROC"),
+       lty=c("dashed","solid"))
+
+
+```
+
+
+
+
+
+## Model Comparision
+Plot of the ROC Curves on the Train Data and the Test Data
+
+```{r}
+plot(creditROC.train.glm, legacy.axes = TRUE,lty = "solid",col=1)
+plot(creditROC.train.gam, legacy.axes = TRUE,lty = "solid",add= TRUE,col=2)
+plot(creditROC.train.nn, legacy.axes = TRUE,lty = "solid",add= TRUE,col=3)
+plot(creditROC.train.tree, legacy.axes = TRUE,lty = "solid",add= TRUE,col=4)
+plot(creditROC.train.lda, legacy.axes = TRUE,lty = "solid",add= TRUE,col=5)
+legend("topright",legend=c("glm","gam","nn","tree"),
+       lty="solid",col=1:4)
+
+
+```
+
+
+It can be clearly seen that the `Neural networks` have the highest `AUC` for the Train Data with the Tree being the least followed by both `glm` and `gam`.
+```{r}
+plot(creditROC.test.glm, legacy.axes = TRUE,lty = "solid",col=1)
+plot(creditROC.test.gam, legacy.axes = TRUE,lty = "solid",add= TRUE,col=2)
+plot(creditROC.test.nn, legacy.axes = TRUE,lty = "solid",add= TRUE,col=3)
+plot(creditROC.test.tree, legacy.axes = TRUE,lty = "solid",add= TRUE,col=4)
+plot(creditROC.test.lda, legacy.axes = TRUE,lty = "solid",add= TRUE,col=4)
+legend("topright",legend=c("glm","gam","nn","tree"),
+       lty="solid",col=1:4)
+
+
+```
+For the TestData the `GAM` has the highest `AUC` with the least being the `Tree`. 
+
+Plot of the Misclassification Rates on the Train and Test Data :
+```{r}
+mis_train <- c(glm.mis.train,nn.mis.train,tree.mis.train,gam.mis.train,mis.lda.in)
+mis_test <-  c(glm.mis.test,nn.mis.test,tree.mis.test,gam.mis.test,mis.lda.out)
+plot(1:5,mis_train,xaxt="n",type="b")
+lines(mis_test,type="b",col="red",lty="dashed")
+axis(1, at=1:5, labels=c("glm","nn","tree","gam","lda"))
+legend("bottomright",legend=c("Out of Sample Misclassification ","In Sample Misclassification"),
+       lty=c("dashed","solid"))
+```
+It can be observed here that the Neural Networks gave the lowest Misclassification on both the test and the Train .Also,the trees ,GAM and LDA gave the highest misclassification also poor generalization to the data.
+
+
+
